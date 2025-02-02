@@ -222,10 +222,10 @@ const actsStatusTree = {
   )
 };
 
-// --- Build Studio1A Subtree ---
+// --- Build Studio Subtree ---
 // Keys:
 // 1 - Program Tally; 2 - Preview Tally; 3 - vMix Connected; 4 - ACTS Status.
-const studio1ASubtree = {
+const studioSubtree = {
   1: new NumberedTreeNodeImpl(
     1,
     new EmberNodeImpl('Program Tally', 'Program Tally', undefined, true),
@@ -292,8 +292,8 @@ const tree = {
     {
       1: new NumberedTreeNodeImpl(
         1,
-        new EmberNodeImpl('Studio1A', 'Studio1A', undefined, true),
-        studio1ASubtree
+        new EmberNodeImpl('Studio', 'Studio', undefined, true),
+        studioSubtree
       ),
       2: new NumberedTreeNodeImpl(
         2,

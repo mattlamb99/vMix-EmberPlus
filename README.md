@@ -94,7 +94,7 @@ The application will:
 # EmberPlus Tree Structure
 ```
 vMix
- ├─ Studio1A
+ ├─ Studio
  │    ├─ Program Tally
  │    │      └─ Input 1 … Input 32 (boolean values)
  │    ├─ Preview Tally

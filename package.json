@@ -10,8 +10,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "chalk": "^5.4.1",
-    "xml2js": "^0.6.2",
-    "emberplus-connection": "^0.2.2"
+    "chalk": "^4.1.2",
+    "emberplus-connection": "^0.2.2",
+    "xml2js": "^0.6.2"
   }
 }

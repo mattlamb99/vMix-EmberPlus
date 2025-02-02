@@ -23,7 +23,7 @@
  * Console output is colorized using Chalk.
  */
 
-const chalk = require('chalk').default;
+const chalk = require('chalk');
 const { EmberServer, Model } = require('emberplus-connection');
 const {
   NumberedTreeNodeImpl,

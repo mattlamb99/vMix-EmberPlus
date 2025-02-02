@@ -39,7 +39,7 @@ The **vMix EmberPlus Bridge** is a Node.js application that acts as a bridge bet
   When an EmberPlus function is invoked (via an EmberPlus client), the bridge sends the corresponding vMix command (if the TCP connection is active).
 
 - **Robust Connection Handling:**  
-  If the vMix TCP connection fails, the bridge uses an exponential back-off strategy (with delays of 2, 4, 16, then 30 seconds) to attempt reconnection. The "vMix Connected" node in the EmberPlus tree reflects the connection status.
+  If the vMix TCP connection fails, the bridge uses an exponential back-off strategy (with delays of 2, 4, 8, 16, then 30 seconds) to attempt reconnection. The "vMix Connected" node in the EmberPlus tree reflects the connection status.
 
 
 ## Requirements
@@ -64,7 +64,8 @@ The **vMix EmberPlus Bridge** is a Node.js application that acts as a bridge bet
 emberplus-connection
 chalk
 Configuration
-By default, the bridge expects the vMix instance to be available on localhost port 8099. If your vMix instance is running on a different host or port, update the following constants in bridge.js:
+By default, the bridge expects the vMix instance to be available on localhost port 8099. If your vMix instance is running on a different host or port, update the following constants in bridge.js, 
+Or by Setting ENV variables ```VMIX_HOST``` and or ```VMIX_PORT```
 
 
 ```

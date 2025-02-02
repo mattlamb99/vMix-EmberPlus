@@ -332,8 +332,9 @@ console.log(chalk.blue('EmberPlus server running on port 9000'));
 // -------------------------------------------------
 
 // vMix settings
-const VMIX_HOST = 'localhost';
-const VMIX_PORT = 8099;
+const VMIX_HOST = process.env.VMIX_HOST || 'localhost';
+const VMIX_PORT = process.env.VMIX_PORT ? parseInt(process.env.VMIX_PORT, 10) : 8099;
+
 
 // Retry delays (in milliseconds)
 const retryDelays = [2000, 4000, 16000]; // 2s, 4s, 16s

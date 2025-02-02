@@ -1,7 +1,7 @@
 {
   "name": "vmix-ember-tally",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "brige.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -11,6 +11,7 @@
   "description": "",
   "dependencies": {
     "chalk": "^5.4.1",
-    "xml2js": "^0.6.2"
+    "xml2js": "^0.6.2",
+    "emberplus-connection": "^0.2.2"
   }
 }

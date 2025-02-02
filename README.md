@@ -48,7 +48,9 @@ The **vMix EmberPlus Bridge** is a Node.js application that acts as a bridge bet
 - npm (Node Package Manager)
 
 ## Installation
-
+### Docker
+```docker run -p 9000:9000 -e VMIX_HOST=<your_vmix_host> -e VMIX_PORT=8099 mattlamb99/vmix-emberplus-bridge```
+### Locally
 1. **Clone the Repository:**
 
    ```bash
@@ -61,18 +63,18 @@ The **vMix EmberPlus Bridge** is a Node.js application that acts as a bridge bet
 
    This project depends on:
 
-emberplus-connection
-chalk
-Configuration
-By default, the bridge expects the vMix instance to be available on localhost port 8099. If your vMix instance is running on a different host or port, update the following constants in bridge.js, 
-Or by Setting ENV variables ```VMIX_HOST``` and or ```VMIX_PORT```
+* emberplus-connection
+* chalk
+# Configuration
+By default, the bridge expects the vMix instance to be available on localhost port 8099. If your vMix instance is running on a different host or port, 
+set ENV variables ```VMIX_HOST``` and or ```VMIX_PORT```
 
 
 ```
 const VMIX_HOST = 'localhost';
 const VMIX_PORT = 8099;
 ```
-Usage
+## Usage
 Run the bridge with:
 
 ```

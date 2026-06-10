@@ -5,15 +5,12 @@
  * split into two subtrees: one for "Program Tally" and one for "Preview Tally."
  * It also adds two additional status subtrees:
  *   - A boolean node ("vMix Connected") indicating the vMix TCP connection status.
- *   - An "ACTS Status" subtree for Recording, MultiCorder, and Stream      3: new NumberedTreeNodeImpl(
-        3,
-        new EmberNodeImpl('Matrices', 'Matrices', undefined, true),
-        {
-          1: createVmixMatrix()
-        }
-      ) * Additionally, under the "Functions" node, several functions are provided.
+ *   - An "ACTS Status" subtree for Recording, MultiCorder, and Streaming.
+ * A "Functions" node exposes several vMix commands, and a "Matrices" node exposes
+ * the vMix Routing Matrix (routable outputs as targets; inputs plus
+ * Program/Preview/MultiView as sources).
  * When an Ember function is invoked, the code sends the corresponding vMix command.
- * 
+ *
  * The vMix TCP API returns tally strings like:
  *    TALLY OK 0121...
  * (where 0 = off, 1 = program, 2 = preview),
@@ -23,7 +20,7 @@
  *    ACTS OK Streaming 1
  * (where 1 means active and 0 means inactive).
  * 
- * If the connection to vMix fails, reconnection is attempted using exponential back‑off.
+ * If the connection to vMix fails, reconnection is attempted using exponential back-off.
  * Console output is colorized using Chalk.
  */
 
@@ -41,19 +38,12 @@ const {
   MatrixAddressingMode
 } = Model;
 const net = require('net');
-const xml2js = require('xml2js');
+const { parseTally, parseActs, buildRouteCommand } = require('./parsers');
 
 // -------------------------------------------------
 // Global variables for vMix connection and state
 // -------------------------------------------------
 let vmixConnection = null;
-let vmixPollInterval = null;
-let lastXMLRequest = 0;
-let vmixMatrixState = {
-  inputs: new Map(),  // Map<number, {title, shortTitle}>
-  outputs: new Map(), // Map<string, string> - output name to current source
-  pseudoSources: new Map() // Map<string, string> - pseudo sources like Multiview1, etc.
-};
 
 // Matrix labeling helpers (element number -> metadata)
 const matrixSourceNamesById = new Map();
@@ -65,7 +55,10 @@ const matrixTargetMetaById = new Map();
 // 1. Set Up the EmberPlus Server and Tree
 // -------------------------------------------------
 
-const s = new EmberServer(9000);
+// Ember+ provider listen port (override with EMBER_PORT).
+const EMBER_PORT = process.env.EMBER_PORT ? parseInt(process.env.EMBER_PORT, 10) : 9000;
+
+const s = new EmberServer(EMBER_PORT);
 
 // Mapping from function identifier to the command that should be sent to vMix.
 const functionCommandMapping = {
@@ -175,7 +168,10 @@ function handleVmixMatrixOperation(connection) {
     return;
   }
 
-  if (operation !== 'CONNECT') {
+  // Route on CONNECT and ABSOLUTE (and a missing operation, which Ember+ treats as
+  // absolute). Consumers setting a One-to-N crosspoint typically send ABSOLUTE, not
+  // CONNECT - emberviewer and Lawo VSM both do. Only ignore genuinely unknown ops.
+  if (operation && operation !== 'CONNECT' && operation !== 'ABSOLUTE') {
     console.log(chalk.yellow(`Ignoring matrix operation ${operation} for ${sourceName} -> ${targetName}`));
     return;
   }
@@ -186,23 +182,9 @@ function handleVmixMatrixOperation(connection) {
 
   console.log(chalk.cyan(`Matrix routing request: ${sourceName} (${sourceId}) -> ${targetName} (${targetId})`));
 
-  let command;
-
-  if (sourceMeta.kind === 'input') {
-    const inputNumber = sourceMeta.inputNumber;
-    if (targetMeta.kind === 'output') {
-      command = `FUNCTION SetOutput${targetMeta.number} Value=Input&Input=${inputNumber}`;
-    } else if (targetMeta.kind === 'fullscreen') {
-      command = `FUNCTION SetFullscreen${targetMeta.number} Value=Input&Input=${inputNumber}`;
-    }
-  } else if (sourceMeta.kind === 'pseudo') {
-    const pseudoValue = sourceMeta.value;
-    if (targetMeta.kind === 'output') {
-      command = `FUNCTION SetOutput${targetMeta.number} Value=${pseudoValue}`;
-    } else if (targetMeta.kind === 'fullscreen') {
-      command = `FUNCTION SetFullscreen${targetMeta.number} Value=${pseudoValue}`;
-    }
-  }
+  // Targets are routable vMix outputs (SetOutput2/3/4); sources are a specific input
+  // (Value=Input&Input=N) or a named value such as Output/Preview/MultiView.
+  const command = buildRouteCommand(sourceMeta, targetMeta);
 
   if (command) {
     console.log(chalk.green(`Sending vMix routing command: ${command}`));
@@ -219,10 +201,12 @@ const previewTallyNodes = {};
 const programTallyTree = {};
 const previewTallyTree = {};
 
+// Each input is a single boolean parameter directly under "Program Tally" /
+// "Preview Tally" (param number == input number). This keeps the tree shallow:
+// Program Tally -> Input N (boolean) at 1.1.1.N, not 1.1.1.N.1.
 for (let i = 1; i <= 32; i++) {
-  // Program Tally node for input i.
   const programParameterNode = new NumberedTreeNodeImpl(
-    1,
+    i,
     new ParameterImpl(
       ParameterType.Boolean,
       `Input ${i}`,
@@ -233,17 +217,11 @@ for (let i = 1; i <= 32; i++) {
       ParameterAccess.Read
     )
   );
-  const programContainerNode = new NumberedTreeNodeImpl(
-    i,
-    new EmberNodeImpl(`Input ${i}`, `Input ${i} Program Tally`, undefined, true),
-    { 1: programParameterNode }
-  );
   programTallyNodes[i] = programParameterNode;
-  programTallyTree[i] = programContainerNode;
+  programTallyTree[i] = programParameterNode;
 
-  // Preview Tally node for input i.
   const previewParameterNode = new NumberedTreeNodeImpl(
-    1,
+    i,
     new ParameterImpl(
       ParameterType.Boolean,
       `Input ${i}`,
@@ -254,13 +232,8 @@ for (let i = 1; i <= 32; i++) {
       ParameterAccess.Read
     )
   );
-  const previewContainerNode = new NumberedTreeNodeImpl(
-    i,
-    new EmberNodeImpl(`Input ${i}`, `Input ${i} Preview Tally`, undefined, true),
-    { 1: previewParameterNode }
-  );
   previewTallyNodes[i] = previewParameterNode;
-  previewTallyTree[i] = previewContainerNode;
+  previewTallyTree[i] = previewParameterNode;
 }
 
 // --- New: vMix Connected Node ---
@@ -282,60 +255,27 @@ const vmixConnectedContainerNode = new NumberedTreeNodeImpl(
   { 1: vmixConnectedParameterNode }
 );
 
-// --- New: ACTS Status Subtree ---
-// Create parameter nodes for Recording, MultiCorder, and Streaming.
+// --- ACTS Status Subtree ---
+// Recording / MultiCorder / Streaming as flat boolean parameters directly under
+// "ACTS Status" (no per-status wrapper node), matching the flat tally layout.
 const actsStatusNodes = {};
-
-const actsStatusTree = {
-  1: new NumberedTreeNodeImpl(
-    1,
-    new EmberNodeImpl('Recording', 'Recording status', undefined, true),
-    { 1: (actsStatusNodes["Recording"] = new NumberedTreeNodeImpl(
-        1,
-        new ParameterImpl(
-          ParameterType.Boolean,
-          'Recording',
-          'Recording status',
-          false,
-          undefined,
-          undefined,
-          ParameterAccess.Read
-        )
-      )) }
-  ),
-  2: new NumberedTreeNodeImpl(
-    2,
-    new EmberNodeImpl('MultiCorder', 'MultiCorder status', undefined, true),
-    { 1: (actsStatusNodes["MultiCorder"] = new NumberedTreeNodeImpl(
-        1,
-        new ParameterImpl(
-          ParameterType.Boolean,
-          'MultiCorder',
-          'MultiCorder status',
-          false,
-          undefined,
-          undefined,
-          ParameterAccess.Read
-        )
-      )) }
-  ),
-  3: new NumberedTreeNodeImpl(
-    3,
-    new EmberNodeImpl('Streaming', 'Streaming status', undefined, true),
-    { 1: (actsStatusNodes["Streaming"] = new NumberedTreeNodeImpl(
-        1,
-        new ParameterImpl(
-          ParameterType.Boolean,
-          'Streaming',
-          'Streaming status',
-          false,
-          undefined,
-          undefined,
-          ParameterAccess.Read
-        )
-      )) }
-  )
-};
+const actsStatusTree = {};
+['Recording', 'MultiCorder', 'Streaming'].forEach((name, idx) => {
+  const node = new NumberedTreeNodeImpl(
+    idx + 1,
+    new ParameterImpl(
+      ParameterType.Boolean,
+      name,
+      `${name} status`,
+      false,
+      undefined,
+      undefined,
+      ParameterAccess.Read
+    )
+  );
+  actsStatusNodes[name] = node;
+  actsStatusTree[idx + 1] = node;
+});
 
 // --- Build Studio Subtree ---
 // Keys:
@@ -401,9 +341,26 @@ const functionsTree = {
 
 // --- Create Matrix with Proper Names ---
 const createVmixMatrixNodes = () => {
-  // Source / target names exposed to Ember+ clients
-  const sourceNames = [];
-  const targetNames = ['Output 1', 'Output 2', 'Output 3', 'Output 4', 'Fullscreen 1', 'Fullscreen 2'];
+  // Only Outputs 2-4 are routable on vMix: Output 1 is Program-locked and the
+  // Fullscreen outputs cannot take an input. Sources are the vMix inputs plus
+  // Program / Preview / MultiView. The `number` (target) and `value` (source)
+  // fields drive the vMix command in handleVmixMatrixOperation.
+  const INPUT_SOURCE_COUNT = 21; // static; vMix input names are not polled today
+  const targets = [
+    { name: 'Output 2', number: 2 },
+    { name: 'Output 3', number: 3 },
+    { name: 'Output 4', number: 4 }
+  ];
+  // Output sources confirmed to actually render on a live vMix. Mix 2-4 are
+  // deliberately excluded: vMix accepts `Value=Mix&Mix=N` and reports `source="Mix"`
+  // in its XML, but it renders secondary mixes as BLACK on NDI/external outputs, so
+  // they are useless as routable sources here.
+  const pseudoSources = [
+    { name: 'Program', meta: { kind: 'value', value: 'Output' } },
+    { name: 'Preview', meta: { kind: 'value', value: 'Preview' } },
+    { name: 'MultiView 1', meta: { kind: 'value', value: 'MultiView' } },
+    { name: 'MultiView 2', meta: { kind: 'value', value: 'MultiView2' } }
+  ];
 
   // Clear previous metadata
   matrixSourceNamesById.clear();
@@ -411,78 +368,58 @@ const createVmixMatrixNodes = () => {
   matrixTargetNamesById.clear();
   matrixTargetMetaById.clear();
 
-  for (let i = 1; i <= 21; i++) {
-    sourceNames.push(`Input ${i}`);
-  }
-  sourceNames.push('Multiview 1', 'Multiview 2', 'Main Mix');
-
-  const matrixSourceNodes = {};
-  const matrixTargetNodes = {};
+  // Label string parameters keyed by signal id. This is the Lawo Ruby / Arkona
+  // convention that emberviewer and Lawo VSM resolve: the matrix `labels[].basePath`
+  // points (as an ABSOLUTE OID from root) at a container whose "Targets"/"Sources"
+  // child nodes hold one string parameter per signal (param number == signal id,
+  // value == name). Do NOT wrap each signal in its own node with a child "Label".
+  const sourceLabelParams = {};
+  const targetLabelParams = {};
   const matrixSourceElementNumbers = [];
   const matrixTargetElementNumbers = [];
 
   const SOURCE_BASE = 10;
   const TARGET_BASE = 100;
 
-  sourceNames.forEach((name, idx) => {
-    const elementNumber = SOURCE_BASE + idx;
+  const makeLabelParam = (elementNumber, name) =>
+    new NumberedTreeNodeImpl(
+      elementNumber,
+      new ParameterImpl(
+        ParameterType.String,
+        name,
+        `${name} label`,
+        name,
+        undefined,
+        undefined,
+        ParameterAccess.Read
+      )
+    );
+
+  // Sources: vMix inputs first, then the pseudo sources.
+  let sourceIdx = 0;
+  for (let i = 1; i <= INPUT_SOURCE_COUNT; i++) {
+    const elementNumber = SOURCE_BASE + sourceIdx++;
+    const name = `Input ${i}`;
     matrixSourceElementNumbers.push(elementNumber);
     matrixSourceNamesById.set(elementNumber, name);
-
-    if (idx < 21) {
-      matrixSourceMetaById.set(elementNumber, { kind: 'input', inputNumber: idx + 1 });
-    } else {
-      const pseudoMap = ['Multiview1', 'Multiview2', 'Output1'];
-      matrixSourceMetaById.set(elementNumber, { kind: 'pseudo', value: pseudoMap[idx - 21] });
-    }
-
-    matrixSourceNodes[elementNumber] = new NumberedTreeNodeImpl(
-      elementNumber,
-      new EmberNodeImpl(name, `${name} Source`, undefined, true),
-      {
-        1: new NumberedTreeNodeImpl(
-          1,
-          new ParameterImpl(
-            ParameterType.String,
-            'Label',
-            `${name} Label`,
-            name,
-            undefined,
-            undefined,
-            ParameterAccess.Read
-          )
-        )
-      }
-    );
+    matrixSourceMetaById.set(elementNumber, { kind: 'input', inputNumber: i });
+    sourceLabelParams[elementNumber] = makeLabelParam(elementNumber, name);
+  }
+  pseudoSources.forEach((src) => {
+    const elementNumber = SOURCE_BASE + sourceIdx++;
+    matrixSourceElementNumbers.push(elementNumber);
+    matrixSourceNamesById.set(elementNumber, src.name);
+    matrixSourceMetaById.set(elementNumber, src.meta);
+    sourceLabelParams[elementNumber] = makeLabelParam(elementNumber, src.name);
   });
 
-  targetNames.forEach((name, idx) => {
+  // Targets: routable vMix outputs.
+  targets.forEach((target, idx) => {
     const elementNumber = TARGET_BASE + idx;
     matrixTargetElementNumbers.push(elementNumber);
-    matrixTargetNamesById.set(elementNumber, name);
-
-    const targetType = name.startsWith('Fullscreen') ? 'fullscreen' : 'output';
-    const targetNumber = parseInt(name.match(/\d+$/)?.[0] || `${idx + 1}`, 10);
-    matrixTargetMetaById.set(elementNumber, { kind: targetType, number: targetNumber });
-
-    matrixTargetNodes[elementNumber] = new NumberedTreeNodeImpl(
-      elementNumber,
-      new EmberNodeImpl(name, `${name} Target`, undefined, true),
-      {
-        1: new NumberedTreeNodeImpl(
-          1,
-          new ParameterImpl(
-            ParameterType.String,
-            'Label',
-            `${name} Label`,
-            name,
-            undefined,
-            undefined,
-            ParameterAccess.Read
-          )
-        )
-      }
-    );
+    matrixTargetNamesById.set(elementNumber, target.name);
+    matrixTargetMetaById.set(elementNumber, { kind: 'output', number: target.number });
+    targetLabelParams[elementNumber] = makeLabelParam(elementNumber, target.name);
   });
 
   const matrixElementNode = new NumberedTreeNodeImpl(
@@ -495,29 +432,34 @@ const createVmixMatrixNodes = () => {
       undefined,
       MatrixType.OneToN,
       MatrixAddressingMode.NonLinear,
-      targetNames.length,
-      sourceNames.length,
+      matrixTargetElementNumbers.length,
+      matrixSourceElementNumbers.length,
       undefined,
       1,
       undefined,
       undefined,
-      [
-        { basePath: '2', description: 'Targets' },
-        { basePath: '3', description: 'Sources' }
-      ]
+      // basePath is an ABSOLUTE OID from root to the Labels container below:
+      // vMix(1) / Matrices(3) / Routing(1) / Labels(2).
+      [{ basePath: '1.3.1.2', description: 'vMix Routing Labels' }]
     )
   );
 
-  const targetsContainer = new NumberedTreeNodeImpl(
+  // Labels container: Targets/Sources nodes of string params keyed by signal id.
+  const labelsContainer = new NumberedTreeNodeImpl(
     2,
-    new EmberNodeImpl('Targets', 'Matrix Targets', undefined, true),
-    matrixTargetNodes
-  );
-
-  const sourcesContainer = new NumberedTreeNodeImpl(
-    3,
-    new EmberNodeImpl('Sources', 'Matrix Sources', undefined, true),
-    matrixSourceNodes
+    new EmberNodeImpl('Labels', 'vMix Routing Matrix labels', undefined, true),
+    {
+      1: new NumberedTreeNodeImpl(
+        1,
+        new EmberNodeImpl('Targets', 'Matrix target labels', undefined, true),
+        targetLabelParams
+      ),
+      2: new NumberedTreeNodeImpl(
+        2,
+        new EmberNodeImpl('Sources', 'Matrix source labels', undefined, true),
+        sourceLabelParams
+      )
+    }
   );
 
   const routingContainer = new NumberedTreeNodeImpl(
@@ -525,8 +467,7 @@ const createVmixMatrixNodes = () => {
     new EmberNodeImpl('Routing', 'vMix Routing Matrix', undefined, true),
     {
       1: matrixElementNode,
-      2: targetsContainer,
-      3: sourcesContainer
+      2: labelsContainer
     }
   );
 
@@ -571,7 +512,7 @@ const tree = {
 };
 
 s.init(tree);
-console.log(chalk.blue('EmberPlus server running on port 9000'));
+console.log(chalk.blue(`EmberPlus server running on port ${EMBER_PORT}`));
 
 // -------------------------------------------------
 // 2. Connect to vMix TCP API with Exponential Backoff on Error
@@ -580,199 +521,6 @@ console.log(chalk.blue('EmberPlus server running on port 9000'));
 // vMix settings
 const VMIX_HOST = process.env.VMIX_HOST || 'localhost';
 const VMIX_PORT = process.env.VMIX_PORT ? parseInt(process.env.VMIX_PORT, 10) : 8099;
-
-// -------------------------------------------------
-// XML Parsing Functions
-// -------------------------------------------------
-
-/**
- * Parses vMix XML status and updates matrix state
- * @param {string} xmlData - Raw XML string from vMix
- */
-async function parseVmixXML(xmlData) {
-  try {
-    const parser = new xml2js.Parser();
-    const result = await parser.parseStringPromise(xmlData);
-    
-    if (!result.vmix) {
-      console.warn(chalk.yellow('Invalid XML structure received from vMix'));
-      return;
-    }
-    
-    // Clear existing state
-    vmixMatrixState.inputs.clear();
-    vmixMatrixState.outputs.clear();
-    vmixMatrixState.pseudoSources.clear();
-    
-    // Parse inputs
-    if (result.vmix.inputs && result.vmix.inputs[0] && result.vmix.inputs[0].input) {
-      for (const input of result.vmix.inputs[0].input) {
-        const number = parseInt(input.$.number);
-        const title = input.$.title || `Input ${number}`;
-        const shortTitle = input.$.shortTitle || title;
-        
-        vmixMatrixState.inputs.set(number, { title, shortTitle });
-      }
-      console.log(chalk.cyan(`Parsed ${vmixMatrixState.inputs.size} inputs from XML`));
-    }
-    
-    // Parse outputs (from XML if available, or use defaults)
-    const defaultOutputs = ['Output 1', 'Output 2', 'Output 3', 'Output 4', 'Fullscreen 1', 'Fullscreen 2'];
-    for (const output of defaultOutputs) {
-      vmixMatrixState.outputs.set(output, 'Input 1'); // Default to Input 1
-    }
-    
-    // Add pseudo sources
-    vmixMatrixState.pseudoSources.set('Multiview 1', 'Multiview 1');
-    vmixMatrixState.pseudoSources.set('Multiview 2', 'Multiview 2');
-    vmixMatrixState.pseudoSources.set('Main Mix', 'Output 1');
-    
-    console.log(chalk.green('Matrix state updated from XML'));
-    
-    // Rebuild dynamic matrix if needed
-    await rebuildDynamicMatrix();
-    
-  } catch (error) {
-    console.error(chalk.red('Error parsing vMix XML:'), error.message);
-  }
-}
-
-/**
- * Rebuilds the dynamic matrix based on current vMix state
- */
-async function rebuildDynamicMatrix() {
-  if (!dynamicMatrix) {
-    console.log(chalk.blue('Creating initial dynamic matrix...'));
-    await createDynamicMatrix();
-  } else {
-    console.log(chalk.blue('Updating existing matrix sources/targets...'));
-    // Update matrix dimensions and labels based on current state
-    updateMatrixLabels();
-  }
-}
-
-/**
- * Creates the dynamic vMix routing matrix
- */
-async function createDynamicMatrix() {
-  const sources = [];
-  const targets = [];
-  const connections = {};
-  
-  // Build sources list: inputs + pseudo sources
-  let sourceIndex = 0;
-  
-  // Add vMix inputs as sources
-  for (const [number, input] of vmixMatrixState.inputs) {
-    sources.push({
-      number: sourceIndex,
-      name: input.shortTitle
-    });
-    sourceIndex++;
-  }
-  
-  // Add pseudo sources
-  for (const [name, _] of vmixMatrixState.pseudoSources) {
-    sources.push({
-      number: sourceIndex,
-      name: name
-    });
-    sourceIndex++;
-  }
-  
-  // Build targets list from outputs
-  let targetIndex = 0;
-  for (const outputName of vmixMatrixState.outputs.keys()) {
-    targets.push({
-      number: targetIndex,
-      name: outputName
-    });
-    targetIndex++;
-  }
-  
-  console.log(chalk.cyan(`Matrix: ${sources.length} sources, ${targets.length} targets`));
-  
-  // Create the matrix
-  dynamicMatrix = new NumberedTreeNodeImpl(
-    1,
-    new MatrixImpl(
-      'vMix Routing Matrix',
-      sources.map(s => s.number),
-      targets.map(t => t.number),
-      connections,
-      undefined,
-      MatrixType.NToN,
-      MatrixAddressingMode.NonLinear,
-      targets.length,
-      sources.length,
-      sources.map(s => s.name),
-      targets.map(t => t.name)
-    )
-  );
-  
-  // Add the dynamic matrix as matrix #2, keeping the test matrix as #1
-  const matricesNode = tree[1].children[3];
-  
-  // Create a new numbered tree node for the vMix matrix
-  const vmixMatrixNode = new NumberedTreeNodeImpl(2, dynamicMatrix.contents);
-  
-  // Add it to the matrices node children
-  matricesNode.children[2] = vmixMatrixNode;
-  
-  console.log(chalk.green('Dynamic matrix created and added to tree'));
-}
-
-/**
- * Updates matrix labels without recreating the entire matrix
- */
-function updateMatrixLabels() {
-  // This would update existing matrix labels
-  // For now, we'll just log that an update is needed
-  console.log(chalk.blue('Matrix label update requested (not implemented yet)'));
-}
-
-/**
- * Starts the XML polling interval
- */
-function startXMLPolling() {
-  // Clear any existing polling interval
-  if (vmixPollInterval) {
-    clearInterval(vmixPollInterval);
-  }
-  
-  vmixPollInterval = setInterval(() => {
-    if (vmixConnection && vmixConnection.writable) {
-      requestXMLUpdate();
-    }
-  }, 2000); // Poll every 2 seconds
-  
-  console.log(chalk.blue('XML polling started (2s interval)'));
-}
-
-/**
- * Stops the XML polling interval
- */
-function stopXMLPolling() {
-  if (vmixPollInterval) {
-    clearInterval(vmixPollInterval);
-    vmixPollInterval = null;
-    console.log(chalk.blue('XML polling stopped'));
-  }
-}
-
-/**
- * Requests XML update from vMix
- */
-function requestXMLUpdate() {
-  const now = Date.now();
-  // Throttle requests to no more than once per 1.8 seconds
-  if (vmixConnection && vmixConnection.writable && (now - lastXMLRequest) > 1800) {
-    console.log(chalk.yellow('Requesting XML update from vMix...'));
-    vmixConnection.write('XML \r\n');
-    lastXMLRequest = now;
-  }
-}
-
 
 // Retry delays (in milliseconds)
 const retryDelays = [2000, 4000, 16000]; // 2s, 4s, 16s
@@ -820,116 +568,52 @@ function connectToVMix(delayIndex = 0) {
     // Subscribe to both TALLY and ACTS updates.
     vmixClient.write('SUBSCRIBE TALLY\r\n');
     vmixClient.write('SUBSCRIBE ACTS\r\n');
-    
-    // Start XML polling for matrix state - DISABLED (using static matrix)
-    // startXMLPolling();
-    
-    // Get initial XML state - DISABLED (using static matrix)
-    // requestXMLUpdate();
   });
-  
+
   // Buffer to accumulate incoming data.
   let dataBuffer = '';
-  let xmlBuffer = '';
-  let collectingXML = false;
-  
+
   vmixClient.on('data', data => {
     dataBuffer += data.toString();
-    
-    // Check if we're starting XML collection
-    if (!collectingXML && dataBuffer.includes('<vmix>')) {
-      console.log(chalk.yellow('Starting XML collection...'));
-      collectingXML = true;
-      xmlBuffer = '';
-      // Extract XML start from buffer
-      const xmlStart = dataBuffer.indexOf('<vmix>');
-      xmlBuffer = dataBuffer.substring(xmlStart);
-      dataBuffer = dataBuffer.substring(0, xmlStart);
-    }
-    
-    // If collecting XML, accumulate data
-    if (collectingXML) {
-      // Check for end
-      if (xmlBuffer.includes('</vmix>')) {
-        console.log(chalk.yellow('Complete XML received, processing...'));
-        const xmlEnd = xmlBuffer.indexOf('</vmix>') + 7; // Include </vmix>
-        const completeXML = xmlBuffer.substring(0, xmlEnd);
-        const remaining = xmlBuffer.substring(xmlEnd);
-        
-        // Process the complete XML
-        parseVmixXML(completeXML);
-        
-        // Reset XML collection and add remaining to dataBuffer
-        collectingXML = false;
-        xmlBuffer = '';
-        dataBuffer = remaining + dataBuffer;
-      }
-      return; // Skip line processing while collecting XML
-    }
-    
+
     // Process each complete line ending in CRLF.
     while (dataBuffer.indexOf('\r\n') !== -1) {
       const lineEndIndex = dataBuffer.indexOf('\r\n');
-      let line = dataBuffer.substring(0, lineEndIndex).trim();
+      const line = dataBuffer.substring(0, lineEndIndex).trim();
       dataBuffer = dataBuffer.substring(lineEndIndex + 2);
-      
-      console.log(chalk.blue('Received line:'), line);
-      
+
       // Process TALLY lines (e.g., "TALLY OK 0121...")
       if (line.startsWith('TALLY OK')) {
-        let tallyString = line.substring(9); // Remove "TALLY OK " (9 characters)
-        console.log(chalk.blue('Tally string:'), tallyString);
-        
-        // Update each input (up to 32) in both subtrees.
-        for (let i = 0; i < tallyString.length && i < 32; i++) {
-          let digit = tallyString.charAt(i);
-          let programValue = (digit === '1');
-          let previewValue = (digit === '2');
-          
-          if (programTallyNodes[i + 1]) {
-            console.log(chalk.red(`Updating Input ${i + 1} Program Tally to ${programValue} (digit: ${digit})`));
-            s.update(programTallyNodes[i + 1], { value: programValue });
+        for (const { input, program, preview } of parseTally(line)) {
+          if (programTallyNodes[input]) {
+            s.update(programTallyNodes[input], { value: program });
           }
-          if (previewTallyNodes[i + 1]) {
-            console.log(chalk.green(`Updating Input ${i + 1} Preview Tally to ${previewValue} (digit: ${digit})`));
-            s.update(previewTallyNodes[i + 1], { value: previewValue });
+          if (previewTallyNodes[input]) {
+            s.update(previewTallyNodes[input], { value: preview });
           }
         }
       }
       // Process ACTS lines (e.g., "ACTS OK Recording 1")
       else if (line.startsWith('ACTS OK')) {
-        // Expected format: "ACTS OK <Category> <Value>"
-        const parts = line.split(' ');
-        if (parts.length >= 4) {
-          const category = parts[2]; // e.g., "Recording", "MultiCorder", "Streaming"
-          const valueStr = parts[3];
-          const value = (valueStr === '1'); // true if "1", false if "0"
-          if (actsStatusNodes[category] !== undefined) {
-            console.log(chalk.magenta(`Updating ${category} status to ${value} (value: ${valueStr})`));
-            s.update(actsStatusNodes[category], { value: value });
-          } else {
-            console.log(chalk.yellow(`Unknown ACTS category received: ${category}`));
-          }
-        } else {
+        const act = parseActs(line);
+        if (!act) {
           console.log(chalk.yellow('Malformed ACTS line:'), line);
+        } else if (actsStatusNodes[act.category] !== undefined) {
+          console.log(chalk.magenta(`Updating ${act.category} status to ${act.active}`));
+          s.update(actsStatusNodes[act.category], { value: act.active });
+        } else {
+          console.log(chalk.yellow(`Unknown ACTS category received: ${act.category}`));
         }
-      }
-      // Process XML length responses (e.g., "XML 9746")
-      else if (line.startsWith('XML ') && line.split(' ').length === 2) {
-        const xmlLength = parseInt(line.split(' ')[1]);
-        console.log(chalk.yellow(`XML response indicates ${xmlLength} bytes of data coming...`));
-        // XML data should follow in the next data chunk
       }
       else {
         console.log(chalk.blue('Other response:'), line);
       }
     }
   });
-  
+
   // Handle connection errors.
   vmixClient.on('error', err => {
     vmixConnection = null;
-    stopXMLPolling();
     if (err.code === 'ECONNREFUSED') {
       let delay = (delayIndex < retryDelays.length) ? retryDelays[delayIndex] : maxRetryDelay;
       console.error(chalk.red(`vMix is not reachable (connection refused). Error: ${err.message}`));
@@ -942,7 +626,6 @@ function connectToVMix(delayIndex = 0) {
   // Handle connection closure.
   vmixClient.on('close', () => {
     vmixConnection = null;
-    stopXMLPolling();
     let delay = (delayIndex < retryDelays.length) ? retryDelays[delayIndex] : maxRetryDelay;
     console.error(chalk.red('vMix TCP API connection closed.'));
     scheduleReconnect(delay, (delayIndex < retryDelays.length) ? delayIndex + 1 : delayIndex);

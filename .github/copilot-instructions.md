@@ -2,10 +2,10 @@
 
 ## Project Architecture
 - **Single-file Node.js app** (`bridge.js`) acts as a bridge between vMix and EmberPlus clients (e.g., Lawo VSM).
-- **EmberPlus Provider Tree** exposes vMix status and control functions to clients. Key subtrees: Studio1A (tallies, connection, ACTS), Functions (vMix commands), Matrices.
-- **TCP Communication**: Connects to vMix via TCP, subscribes to TALLY and ACTS updates, parses responses, and updates the EmberPlus tree.
-- **Function Invocation**: EmberPlus function nodes trigger vMix commands if TCP connection is active.
-- **Robust Connection Handling**: Uses exponential back-off for reconnection (2, 4, 8, 16, 30s) and updates the tree with connection status.
+- **EmberPlus Provider Tree** exposes vMix status and control functions to clients. Key subtrees: Studio (tallies, connection, ACTS), Functions (vMix commands), Matrices (vMix Routing Matrix).
+- **TCP Communication**: Connects to vMix via TCP, subscribes to TALLY and ACTS updates, parses responses (see `parsers.js`), and updates the EmberPlus tree.
+- **Function Invocation**: EmberPlus function nodes trigger vMix commands if TCP connection is active. Matrix routes map to `FUNCTION SetOutput` / `FUNCTION SetFullscreen` commands.
+- **Robust Connection Handling**: Uses back-off for reconnection (2, 4, 16, then 30s) and updates the tree with connection status.
 
 ## Developer Workflows
 - **Run Locally**: `node bridge.js` (requires Node.js v12+)
@@ -16,7 +16,7 @@
 ## Key Patterns & Conventions
 - **TALLY Parsing**: TALLY responses are strings like `TALLY OK 0121...` (0=off, 1=program, 2=preview). Each digit maps to an input's tally state.
 - **ACTS Parsing**: ACTS responses are lines like `ACTS OK Recording 1` (boolean status for Recording, MultiCorder, Streaming).
-- **EmberPlus Tree Structure**: See README for full tree layout. Studio1A subtree is the main status/control area.
+- **EmberPlus Tree Structure**: See README for full tree layout. The Studio subtree is the main status/control area.
 - **Function Mapping**: EmberPlus function nodes map directly to vMix TCP commands (e.g., `FUNCTION CUT`, `FUNCTION STINGER1`).
 - **Error Handling**: On TCP disconnect, logs error, updates tree, and schedules reconnection with exponential back-off.
 
@@ -31,6 +31,8 @@
 
 ## Key Files
 - `bridge.js`: Main application logic, TCP handling, EmberPlus tree definition, command mapping.
+- `parsers.js`: Pure TALLY/ACTS parsers, unit-tested in isolation.
+- `test/`: `node:test` unit tests and real captured vMix fixtures.
 - `README.md`: Detailed architecture, tree structure, and developer usage instructions.
 
 ---

@@ -1,24 +1,28 @@
-# Use an official lightweight Node.js image.
-FROM node:18-alpine
+# Hardened Alpine on the current Node LTS. Alpine keeps a shell for debugging;
+# `apk upgrade` patches OS packages, `npm ci --omit=dev` is reproducible, and the
+# app runs as the unprivileged `node` user.
+FROM node:24-alpine
 
-# Set the working directory in the container.
+# Patch any OS packages with newer security fixes than the base image shipped with.
+RUN apk upgrade --no-cache
+
 WORKDIR /usr/src/app
 
-# Copy package.json and package-lock.json (if available)
+# Install dependencies from the lockfile only (no dev deps, reproducible).
 COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Install dependencies.
-RUN npm install
-
-# Copy the rest of your application code.
+# Copy the application code (see .dockerignore for what is excluded).
 COPY . .
 
-# Expose the port that your EmberPlus server uses.
+# Ember+ provider port (override the listen port with EMBER_PORT).
 EXPOSE 9000
 
-# Set default environment variables (can be overridden at runtime)
+# Default vMix connection (override at runtime).
 ENV VMIX_HOST=localhost
 ENV VMIX_PORT=8099
 
-# Run the application.
-CMD [ "node", "bridge.js" ]
+# Drop privileges: run as the built-in unprivileged user.
+USER node
+
+CMD ["node", "bridge.js"]

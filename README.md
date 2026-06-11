@@ -48,6 +48,15 @@ The **vMix EmberPlus Bridge** is a Node.js application that acts as a bridge bet
   If the vMix TCP connection fails, the bridge uses a back-off strategy (with delays of 2, 4, 16, then 30 seconds for subsequent attempts) to attempt reconnection. The "vMix Connected" node in the EmberPlus tree reflects the connection status.
 
 
+## Companion viewer: emberviewer
+
+If you need a consumer to inspect, test, or operate this provider, try
+**[emberviewer](https://github.com/mattlamb99/emberviewer)** - a cross-platform
+Ember+ viewer. It connects to this bridge (or any Ember+ provider) and lets you
+walk the tree, watch tallies flip live, and drive the routing matrix. It is the
+quickest way to see what this provider emits, and it works with other Ember+
+devices too.
+
 ## Breaking changes in 2.0.0
 
 The Ember+ tree layout changed, so **consumers must remap**. This was done early
@@ -155,7 +164,8 @@ vMix
 
 The tally inputs are flat boolean parameters: `Program Tally -> Input N` lives at
 path `1.1.1.N` (not `1.1.1.N.1`). The matrix label nodes follow the Lawo Ruby /
-Arkona convention so consumers such as Lawo VSM and emberviewer resolve the
+Arkona convention so consumers such as Lawo VSM and
+[emberviewer](https://github.com/mattlamb99/emberviewer) resolve the
 source/target names.
 # vMix TCP API Subscriptions
 ### TALLY Updates:
